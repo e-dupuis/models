@@ -494,6 +494,13 @@ def get_resnet_imagenet(imagenet_path, model_dir):
     file_path = os.path.join(model_dir, "params.yaml")
     params = hyperparams.read_yaml_to_params_dict(file_path)
 
+    default_params = _get_params_from_object(mode="train_and_eval",
+                                             model_type="resnet",
+                                             dataset="imagenet",
+                                             model_dir=model_dir,
+                                             data_dir=imagenet_path,
+                                             config_file=os.path.join(model_dir, "gpu.yaml"),
+                                             params_override='runtime.num_gpus=1, runtime.distribution_strategy="off"')
     # Override params dir
     params.train_dataset.data_dir = imagenet_path,
     params.validation_dataset.data_dir = imagenet_path,
@@ -518,7 +525,7 @@ def get_resnet_imagenet(imagenet_path, model_dir):
     label_smoothing = params.model.loss.label_smoothing
     one_hot = label_smoothing and label_smoothing > 0
 
-    builders = _get_dataset_builders(params, strategy, one_hot)
+    builders = _get_dataset_builders(default_params, strategy, one_hot)
     datasets = [
         builder.build(strategy) if builder else None for builder in builders
     ]
@@ -570,6 +577,13 @@ def get_resnet_imagenet(imagenet_path, model_dir):
     if params.train.resume_checkpoint:
         initial_epoch = resume_from_checkpoint(
             model=model, model_dir=params.model_dir, train_steps=train_steps)
+
+    validation_output = None
+    if not params.evaluation.skip_eval:
+        validation_output = model.evaluate(
+            validation_dataset, steps=validation_steps, verbose=2)
+    logging.info(validation_output)
+    assert (validation_output[1] > 0.7)
 
     return model, train_dataset, validation_dataset, train_builder.num_examples
 
