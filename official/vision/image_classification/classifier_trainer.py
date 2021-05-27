@@ -226,7 +226,7 @@ def _get_params_from_object(model_type, dataset, model_dir, data_dir, mode, conf
 
     pp = pprint.PrettyPrinter()
 
-    logging.info('Base params: %s', pp.pformat(params.as_dict()))
+    # logging.info('Base params: %s', pp.pformat(params.as_dict()))
 
     for param in overriding_configs:
         logging.info('Overriding params: %s', param)
@@ -333,9 +333,24 @@ def serialize_config(params: base_configs.ExperimentConfig, model_dir: str):
 
 def train_and_eval(
         params: base_configs.ExperimentConfig,
-        strategy_override: tf.distribute.Strategy) -> Mapping[str, Any]:
+        strategy_override: tf.distribute.Strategy,
+        clone_method=None,
+        additional_callbacks=[None],
+        return_model=False,
+) -> Mapping[str, Any]:
+    logging.set_verbosity(logging.INFO)
     """Runs the train and eval path using compile/fit."""
     logging.info('Running train and eval.')
+    logging.info(f"Model dir {params.model_dir}")
+    logging.info(f"Imagenet dir {params.train_dataset.data_dir}")
+
+    default_params = _get_params_from_object(mode="train_and_eval",
+                                             model_type="resnet",
+                                             dataset="imagenet",
+                                             model_dir=params.model_dir,
+                                             data_dir=params.train_dataset.data_dir,
+                                             config_file=os.path.join(params.model_dir, "../gpu.yaml"),
+                                             params_override='runtime.num_gpus=1, runtime.distribution_strategy="off"')
 
     distribute_utils.configure_cluster(params.runtime.worker_hosts,
                                        params.runtime.task_index)
@@ -355,7 +370,7 @@ def train_and_eval(
     label_smoothing = params.model.loss.label_smoothing
     one_hot = label_smoothing and label_smoothing > 0
 
-    builders = _get_dataset_builders(params, strategy, one_hot)
+    builders = _get_dataset_builders(default_params, strategy, one_hot)
     datasets = [
         builder.build(strategy) if builder else None for builder in builders
     ]
@@ -399,6 +414,10 @@ def train_and_eval(
                 label_smoothing=params.model.loss.label_smoothing)
         else:
             loss_obj = tf.keras.losses.SparseCategoricalCrossentropy()
+
+        if clone_method:
+            model = clone_method(model)
+
         model.compile(
             optimizer=optimizer,
             loss=loss_obj,
@@ -421,6 +440,10 @@ def train_and_eval(
             log_steps=params.train.time_history.log_steps,
             model_dir=params.model_dir,
             backup_and_restore=params.train.callbacks.enable_backup_and_restore)
+
+        if len(additional_callbacks) > 0:
+            for callb in additional_callbacks:
+                callbacks.append(callb)
 
     serialize_config(params=params, model_dir=params.model_dir)
 
@@ -449,12 +472,16 @@ def train_and_eval(
 
     # TODO(dankondratyuk): eval and save final test accuracy
     stats = common.build_stats(history, validation_output, callbacks)
-    return stats
+
+    if return_model:
+        return stats, model
+    else:
+        return stats
 
 
 def export(params: base_configs.ExperimentConfig):
     """Runs the model export functionality."""
-    logging.info('Exporting model.')
+    logging.info(f'Exporting model to {params.export.destination}.')
     model_params = params.model.model_params.as_dict()
     model = get_models()[params.model.name](**model_params)
     checkpoint = params.export.checkpoint
