@@ -532,7 +532,7 @@ def train_and_eval(
                 metrics=metrics,
                 steps_per_execution=steps_per_loop)
 
-        accuracy = model.evaluate(validation_dataset, verbose=1)[1]
+        accuracy = model.evaluate(validation_dataset, verbose=1, steps=1)[1]
 
         # TODO(dankondratyuk): eval and save final test accuracy
         model.save(os.path.join(params.model_dir, "exported_model"), include_optimizer=False)
@@ -549,6 +549,7 @@ def train_and_eval(
     if return_dataset:
         return model, train_dataset, validation_dataset, train_builder.num_examples
     else:
+        accuracy = model.evaluate(validation_dataset, verbose=1)[1]
         return accuracy, model
 
 
@@ -585,114 +586,6 @@ def run(flags_obj: flags.FlagValues,
         export(params)
     else:
         raise ValueError('{} is not a valid mode.'.format(params.mode))
-
-
-def get_resnet_imagenet(imagenet_path, model_dir):
-    export_path = os.path.join(model_dir, "exported_model")
-
-    logging.set_verbosity(logging.INFO)
-    # Define flags
-    define_classifier_flags()
-    file_path = os.path.join(model_dir, "params.yaml")
-    params = hyperparams.read_yaml_to_params_dict(file_path)
-
-    default_params = _get_params_from_object(mode="train_and_eval",
-                                             model_type="resnet",
-                                             dataset="imagenet",
-                                             model_dir=model_dir,
-                                             data_dir=imagenet_path,
-                                             config_file=os.path.join(model_dir, "gpu.yaml"),
-                                             params_override='runtime.num_gpus=1, runtime.distribution_strategy="off"')
-    # Override params dir
-    params.train_dataset.data_dir = imagenet_path,
-    params.validation_dataset.data_dir = imagenet_path,
-    params.model_dir = model_dir
-
-    logging.info(params.as_dict())
-    logging.info(params.train_dataset.as_dict())
-    logging.info(params.model_dir)
-
-    logging.info('Getting Imagenet')
-
-    distribute_utils.configure_cluster(params.runtime.worker_hosts,
-                                       params.runtime.task_index)
-
-    # Note: for TPUs, strategy and scope should be created before the dataset
-    strategy = None or distribute_utils.get_distribution_strategy(
-        distribution_strategy=params.runtime.distribution_strategy,
-        all_reduce_alg=params.runtime.all_reduce_alg,
-        num_gpus=params.runtime.num_gpus,
-        tpu_address=params.runtime.tpu)
-
-    label_smoothing = params.model.loss.label_smoothing
-    one_hot = label_smoothing and label_smoothing > 0
-
-    builders = _get_dataset_builders(default_params, strategy, one_hot)
-    datasets = [
-        builder.build(strategy) if builder else None for builder in builders
-    ]
-
-    # Unpack datasets and builders based on train/val/test splits
-    train_builder, validation_builder = builders  # pylint: disable=unbalanced-tuple-unpacking
-    train_dataset, validation_dataset = datasets
-
-    # Get model
-    if os.path.exists(export_path):
-        model = tf.keras.models.load_model(export_path)
-    else:
-        logging.info(f'Getting Trained Resnet from {params.model_dir}')
-        train_epochs = params.train.epochs
-        train_steps = params.train.steps or train_builder.num_steps
-        validation_steps = params.evaluation.steps or validation_builder.num_steps
-
-        model_params = params.model.model_params.as_dict()
-        model = get_models()[params.model.name](**model_params)
-
-        learning_rate = optimizer_factory.build_learning_rate(
-            params=params.model.learning_rate,
-            batch_size=train_builder.global_batch_size,
-            train_epochs=train_epochs,
-            train_steps=train_steps)
-        optimizer = optimizer_factory.build_optimizer(
-            optimizer_name=params.model.optimizer.name,
-            base_learning_rate=learning_rate,
-            params=params.model.optimizer.as_dict(),
-            model=model)
-        optimizer = performance.configure_optimizer(
-            optimizer,
-            use_float16=train_builder.dtype == 'float16',
-            loss_scale=get_loss_scale(params))
-
-        metrics_map = _get_metrics(one_hot)
-        metrics = [metrics_map[metric] for metric in params.train.metrics]
-        steps_per_loop = train_steps if params.train.set_epoch_loop else 1
-
-        if one_hot:
-            loss_obj = tf.keras.losses.CategoricalCrossentropy(
-                label_smoothing=params.model.loss.label_smoothing)
-        else:
-            loss_obj = tf.keras.losses.SparseCategoricalCrossentropy()
-        model.compile(
-            optimizer=optimizer,
-            loss=loss_obj,
-            metrics=metrics,
-            steps_per_execution=steps_per_loop)
-
-        initial_epoch = 0
-        if params.train.resume_checkpoint:
-            initial_epoch = resume_from_checkpoint(
-                model=model, model_dir=params.model_dir, train_steps=train_steps)
-
-        validation_output = None
-        if not params.evaluation.skip_eval:
-            validation_output = model.evaluate(
-                validation_dataset, steps=validation_steps, verbose=2)
-        logging.info(validation_output)
-        assert (validation_output[1] > 0.7)
-
-        model.save(export_path)
-
-    return model, train_dataset, validation_dataset, train_builder.num_examples
 
 
 def main(_):
