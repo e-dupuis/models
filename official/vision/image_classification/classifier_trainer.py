@@ -337,6 +337,7 @@ def train_and_eval(
         clone_method=None,
         additional_callbacks=None,
         return_dataset=False,
+        model_method=None,
 ):
     export_path = os.path.join(params.model_dir, "exported_model")
 
@@ -385,166 +386,127 @@ def train_and_eval(
     train_builder, validation_builder = builders  # pylint: disable=unbalanced-tuple-unpacking
     train_dataset, validation_dataset = datasets
 
-    if False:
-        from official.vision.image_classification.learning_rate import WarmupDecaySchedule
-        custom_objects = {
-            "WarmupDecaySchedule": WarmupDecaySchedule
-        }
-        with tf.keras.utils.custom_object_scope(custom_objects):
-            model = tf.keras.models.load_model(export_path)
+    train_epochs = params.train.epochs
+    train_steps = params.train.steps or train_builder.num_steps
+    validation_steps = params.evaluation.steps or validation_builder.num_steps
 
-            train_epochs = params.train.epochs
-            train_steps = params.train.steps or train_builder.num_steps
-            validation_steps = params.evaluation.steps or validation_builder.num_steps
+    initialize(params, train_builder)
 
-            initialize(params, train_builder)
+    logging.info('Global batch size: %d', train_builder.global_batch_size)
 
-            logging.info('Global batch size: %d', train_builder.global_batch_size)
+    with strategy_scope:
+        model_params = params.model.model_params.as_dict()
 
-            with strategy_scope:
-                model_params = params.model.model_params.as_dict()
-                learning_rate = optimizer_factory.build_learning_rate(
-                    params=params.model.learning_rate,
-                    batch_size=train_builder.global_batch_size,
-                    train_epochs=train_epochs,
-                    train_steps=train_steps)
-                optimizer = optimizer_factory.build_optimizer(
-                    optimizer_name=params.model.optimizer.name,
-                    base_learning_rate=learning_rate,
-                    params=params.model.optimizer.as_dict(),
-                    model=model)
-                optimizer = performance.configure_optimizer(
-                    optimizer,
-                    use_float16=train_builder.dtype == 'float16',
-                    loss_scale=get_loss_scale(params))
-
-                metrics_map = _get_metrics(one_hot)
-                metrics = [metrics_map[metric] for metric in params.train.metrics]
-                steps_per_loop = train_steps if params.train.set_epoch_loop else 1
-
-                if one_hot:
-                    loss_obj = tf.keras.losses.CategoricalCrossentropy(
-                        label_smoothing=params.model.loss.label_smoothing)
-                else:
-                    loss_obj = tf.keras.losses.SparseCategoricalCrossentropy()
-
-                model.compile(
-                    optimizer=optimizer,
-                    loss=loss_obj,
-                    metrics=metrics,
-                    steps_per_execution=steps_per_loop)
-    else:
-
-        train_epochs = params.train.epochs
-        train_steps = params.train.steps or train_builder.num_steps
-        validation_steps = params.evaluation.steps or validation_builder.num_steps
-
-        initialize(params, train_builder)
-
-        logging.info('Global batch size: %d', train_builder.global_batch_size)
-
-        with strategy_scope:
-            model_params = params.model.model_params.as_dict()
+        # Create model
+        if isinstance(model_method, type(None)):
             model = get_models()[params.model.name](**model_params)
-            learning_rate = optimizer_factory.build_learning_rate(
-                params=params.model.learning_rate,
-                batch_size=train_builder.global_batch_size,
-                train_epochs=train_epochs,
-                train_steps=train_steps)
-            optimizer = optimizer_factory.build_optimizer(
-                optimizer_name=params.model.optimizer.name,
-                base_learning_rate=learning_rate,
-                params=params.model.optimizer.as_dict(),
-                model=model)
-            optimizer = performance.configure_optimizer(
-                optimizer,
-                use_float16=train_builder.dtype == 'float16',
-                loss_scale=get_loss_scale(params))
+        else:
+            tf.keras.backend.set_image_data_format('channels_last')
+            model = model_method()
 
-            metrics_map = _get_metrics(one_hot)
-            metrics = [metrics_map[metric] for metric in params.train.metrics]
-            steps_per_loop = train_steps if params.train.set_epoch_loop else 1
+        learning_rate = optimizer_factory.build_learning_rate(
+            params=params.model.learning_rate,
+            batch_size=train_builder.global_batch_size,
+            train_epochs=train_epochs,
+            train_steps=train_steps)
+        optimizer = optimizer_factory.build_optimizer(
+            optimizer_name=params.model.optimizer.name,
+            base_learning_rate=learning_rate,
+            params=params.model.optimizer.as_dict(),
+            model=model)
+        optimizer = performance.configure_optimizer(
+            optimizer,
+            use_float16=train_builder.dtype == 'float16',
+            loss_scale=get_loss_scale(params))
 
-            if one_hot:
-                loss_obj = tf.keras.losses.CategoricalCrossentropy(
-                    label_smoothing=params.model.loss.label_smoothing)
-            else:
-                loss_obj = tf.keras.losses.SparseCategoricalCrossentropy()
+        metrics_map = _get_metrics(one_hot)
+        metrics = [metrics_map[metric] for metric in params.train.metrics]
+        steps_per_loop = train_steps if params.train.set_epoch_loop else 1
 
-            if clone_method:
-                model = clone_method(model)
+        if one_hot:
+            loss_obj = tf.keras.losses.CategoricalCrossentropy(
+                label_smoothing=params.model.loss.label_smoothing)
+        else:
+            loss_obj = tf.keras.losses.SparseCategoricalCrossentropy()
 
-            model.compile(
-                optimizer=optimizer,
-                loss=loss_obj,
-                metrics=metrics,
-                steps_per_execution=steps_per_loop)
+        if clone_method:
+            model = clone_method(model)
 
+        model.compile(
+            optimizer=optimizer,
+            loss=loss_obj,
+            metrics=metrics,
+            steps_per_execution=steps_per_loop)
+
+        if isinstance(model_method, type(None)) and not isinstance(additional_callbacks, list):
             initial_epoch = 0
             if params.train.resume_checkpoint:
                 initial_epoch = resume_from_checkpoint(
                     model=model, model_dir=params.model_dir, train_steps=train_steps)
-
-            callbacks = custom_callbacks.get_callbacks(
-                model_checkpoint=params.train.callbacks.enable_checkpoint_and_export,
-                include_tensorboard=params.train.callbacks.enable_tensorboard,
-                time_history=params.train.callbacks.enable_time_history,
-                track_lr=params.train.tensorboard.track_lr,
-                write_model_weights=params.train.tensorboard.write_model_weights,
-                initial_step=initial_epoch * train_steps,
-                batch_size=train_builder.global_batch_size,
-                log_steps=params.train.time_history.log_steps,
-                model_dir=params.model_dir,
-                backup_and_restore=params.train.callbacks.enable_backup_and_restore)
-
-            if isinstance(additional_callbacks, list):
-                for callb in additional_callbacks:
-                    callbacks.append(callb)
-
-        serialize_config(params=params, model_dir=params.model_dir)
-
-        if params.evaluation.skip_eval:
-            validation_kwargs = {}
         else:
-            validation_kwargs = {
-                'validation_data': validation_dataset,
-                'validation_steps': validation_steps,
-                'validation_freq': params.evaluation.epochs_between_evals,
-            }
+            initial_epoch = 90
 
-        history = model.fit(
-            train_dataset,
-            epochs=train_epochs,
-            steps_per_epoch=train_steps,
-            initial_epoch=initial_epoch,
-            callbacks=callbacks,
-            verbose=2,
-            **validation_kwargs)
+
+        callbacks = custom_callbacks.get_callbacks(
+            model_checkpoint=params.train.callbacks.enable_checkpoint_and_export,
+            include_tensorboard=params.train.callbacks.enable_tensorboard,
+            time_history=params.train.callbacks.enable_time_history,
+            track_lr=params.train.tensorboard.track_lr,
+            write_model_weights=params.train.tensorboard.write_model_weights,
+            initial_step=initial_epoch * train_steps,
+            batch_size=train_builder.global_batch_size,
+            log_steps=params.train.time_history.log_steps,
+            model_dir=params.model_dir,
+            backup_and_restore=params.train.callbacks.enable_backup_and_restore)
 
         if isinstance(additional_callbacks, list):
-            import tensorflow_model_optimization as tfmot
-            print("Strip pruning")
-            model = tfmot.sparsity.keras.strip_pruning(model)
+            for callb in additional_callbacks:
+                callbacks.append(callb)
 
-            model.compile(
-                optimizer=optimizer,
-                loss=loss_obj,
-                metrics=metrics,
-                steps_per_execution=steps_per_loop)
+    serialize_config(params=params, model_dir=params.model_dir)
 
-        accuracy = model.evaluate(validation_dataset, verbose=1, steps=1)[1]
+    if params.evaluation.skip_eval:
+        validation_kwargs = {}
+    else:
+        validation_kwargs = {
+            'validation_data': validation_dataset,
+            'validation_steps': validation_steps,
+            'validation_freq': params.evaluation.epochs_between_evals,
+        }
 
-        # TODO(dankondratyuk): eval and save final test accuracy
-        model.save(os.path.join(params.model_dir, "exported_model"), include_optimizer=False)
-        tf.keras.models.load_model(export_path)
+    history = model.fit(
+        train_dataset,
+        epochs=train_epochs,
+        steps_per_epoch=train_steps,
+        initial_epoch=initial_epoch,
+        callbacks=callbacks,
+        verbose=2,
+        **validation_kwargs)
 
-        # Test TFLITE conversion
-        converter = tf.lite.TFLiteConverter.from_saved_model(export_path)
+    if isinstance(additional_callbacks, list):
+        import tensorflow_model_optimization as tfmot
+        print("Strip pruning")
+        model = tfmot.sparsity.keras.strip_pruning(model)
 
-        # Config & apply converter
-        converter.optimizations = [tf.lite.Optimize.DEFAULT]
+        model.compile(
+            optimizer=optimizer,
+            loss=loss_obj,
+            metrics=metrics,
+            steps_per_execution=steps_per_loop)
 
-        tflite_int8 = converter.convert()
+    accuracy = model.evaluate(validation_dataset, verbose=1, steps=1)[1]
+
+    # TODO(dankondratyuk): eval and save final test accuracy
+    model.save(os.path.join(params.model_dir, "exported_model"), include_optimizer=False)
+    tf.keras.models.load_model(export_path)
+
+    # Test TFLITE conversion
+    converter = tf.lite.TFLiteConverter.from_saved_model(export_path)
+
+    # Config & apply converter
+    converter.optimizations = [tf.lite.Optimize.DEFAULT]
+
+    tflite_int8 = converter.convert()
 
     if return_dataset:
         return model, train_dataset, validation_dataset, train_builder.num_examples
