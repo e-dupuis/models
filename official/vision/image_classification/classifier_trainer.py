@@ -338,6 +338,7 @@ def train_and_eval(
         additional_callbacks=None,
         return_dataset=False,
         model_method=None,
+        base_epoch=None,
 ):
     export_path = os.path.join(params.model_dir, "exported_model")
 
@@ -438,14 +439,18 @@ def train_and_eval(
             metrics=metrics,
             steps_per_execution=steps_per_loop)
 
-        if isinstance(model_method, type(None)) and not isinstance(additional_callbacks, list):
-            initial_epoch = 0
-            if params.train.resume_checkpoint:
-                initial_epoch = resume_from_checkpoint(
-                    model=model, model_dir=params.model_dir, train_steps=train_steps)
-        else:
-            initial_epoch = 90
+        initial_epoch = 0
+        if params.train.resume_checkpoint:
+            initial_epoch = resume_from_checkpoint(
+                model=model, model_dir=params.model_dir, train_steps=train_steps)
+        logging.info(f"Resolved loaded checkpoint {initial_epoch}")
 
+        if initial_epoch == 0 and not isinstance(base_epoch, type(None)):
+            print(model.optimizer)
+            print(model.optimizer.iterations)
+            model.optimizer.iterations.assign(base_epoch * train_steps)
+            print(model.optimizer.iterations)
+            initial_epoch = base_epoch
 
         callbacks = custom_callbacks.get_callbacks(
             model_checkpoint=params.train.callbacks.enable_checkpoint_and_export,
