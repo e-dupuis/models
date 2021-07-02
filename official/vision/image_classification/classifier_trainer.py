@@ -498,8 +498,7 @@ def train_and_eval(
             loss=loss_obj,
             metrics=metrics,
             steps_per_execution=steps_per_loop)
-
-    accuracy = model.evaluate(validation_dataset, verbose=1, steps=1)[1]
+    accuracy = model.evaluate(validation_dataset, verbose=1)[1]
 
     # TODO(dankondratyuk): eval and save final test accuracy
     model.save(os.path.join(params.model_dir, "exported_model"), include_optimizer=False)

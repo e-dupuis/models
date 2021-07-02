@@ -197,18 +197,24 @@ def decode_and_center_crop(image_bytes: tf.Tensor,
   crop_window = tf.stack([offset_height, offset_width,
                           padded_center_crop_size, padded_center_crop_size])
   if decoded:
-    image = tf.image.crop_to_bounding_box(
-        image_bytes,
-        offset_height=offset_height,
-        offset_width=offset_width,
-        target_height=padded_center_crop_size,
-        target_width=padded_center_crop_size)
+      image = tf.image.crop_to_bounding_box(
+          image_bytes,
+          offset_height=offset_height,
+          offset_width=offset_width,
+          target_height=padded_center_crop_size,
+          target_width=padded_center_crop_size)
   else:
-    image = tf.image.decode_and_crop_jpeg(image_bytes, crop_window, channels=3)
+      image = tf.image.decode_and_crop_jpeg(image_bytes, crop_window, channels=3)
 
-  image = resize_image(image_bytes=image,
-                       height=image_size,
-                       width=image_size)
+  if image.dtype != tf.float32:
+      image = tf.image.convert_image_dtype(image, dtype=tf.float32)
+  # image = tf.image.central_crop(image, central_fraction=central_fraction)
+  image = tf.expand_dims(image, 0)
+  image = tf.image.resize(image, [image_size, image_size])
+  image = tf.squeeze(image, [0])
+  image = tf.subtract(image, 0.5)
+  image = tf.multiply(image, 2.0)
+  image.set_shape([image_size, image_size, 3])
 
   return image
 
@@ -302,12 +308,12 @@ def preprocess_for_eval(
   images = decode_and_center_crop(image_bytes, image_size)
   images = tf.reshape(images, [image_size, image_size, num_channels])
 
-  if mean_subtract:
-    images = mean_image_subtraction(image_bytes=images, means=MEAN_RGB)
-  if standardize:
-    images = standardize_image(image_bytes=images, stddev=STDDEV_RGB)
-  if dtype is not None:
-    images = tf.image.convert_image_dtype(images, dtype=dtype)
+  # if mean_subtract:
+  #   images = mean_image_subtraction(image_bytes=images, means=MEAN_RGB)
+  # if standardize:
+  #   images = standardize_image(image_bytes=images, stddev=STDDEV_RGB)
+  # if dtype is not None:
+  #  images = tf.image.convert_image_dtype(images, dtype=dtype)
 
   return images
 
