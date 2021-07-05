@@ -24,7 +24,7 @@ from typing import List, Optional, Text, Tuple
 
 from official.vision.image_classification import augment
 
-
+inceptionV3_preprocess = False
 # Calculated from the ImageNet training set
 MEAN_RGB = (0.485 * 255, 0.456 * 255, 0.406 * 255)
 STDDEV_RGB = (0.229 * 255, 0.224 * 255, 0.225 * 255)
@@ -206,15 +206,21 @@ def decode_and_center_crop(image_bytes: tf.Tensor,
   else:
       image = tf.image.decode_and_crop_jpeg(image_bytes, crop_window, channels=3)
 
-  if image.dtype != tf.float32:
-      image = tf.image.convert_image_dtype(image, dtype=tf.float32)
-  # image = tf.image.central_crop(image, central_fraction=central_fraction)
-  image = tf.expand_dims(image, 0)
-  image = tf.image.resize(image, [image_size, image_size])
-  image = tf.squeeze(image, [0])
-  image = tf.subtract(image, 0.5)
-  image = tf.multiply(image, 2.0)
-  image.set_shape([image_size, image_size, 3])
+  global inceptionV3_preprocess
+  if inceptionV3_preprocess:
+      if image.dtype != tf.float32:
+          image = tf.image.convert_image_dtype(image, dtype=tf.float32)
+      # image = tf.image.central_crop(image, central_fraction=central_fraction)
+      image = tf.expand_dims(image, 0)
+      image = tf.image.resize(image, [image_size, image_size])
+      image = tf.squeeze(image, [0])
+      image = tf.subtract(image, 0.5)
+      image = tf.multiply(image, 2.0)
+      image.set_shape([image_size, image_size, 3])
+  else:
+      image = resize_image(image_bytes=image,
+                           height=image_size,
+                           width=image_size)
 
   return image
 
@@ -308,12 +314,14 @@ def preprocess_for_eval(
   images = decode_and_center_crop(image_bytes, image_size)
   images = tf.reshape(images, [image_size, image_size, num_channels])
 
-  # if mean_subtract:
-  #   images = mean_image_subtraction(image_bytes=images, means=MEAN_RGB)
-  # if standardize:
-  #   images = standardize_image(image_bytes=images, stddev=STDDEV_RGB)
-  # if dtype is not None:
-  #  images = tf.image.convert_image_dtype(images, dtype=dtype)
+  global inceptionV3_preprocess
+  if not inceptionV3_preprocess:
+      if mean_subtract:
+          images = mean_image_subtraction(image_bytes=images, means=MEAN_RGB)
+      if standardize:
+          images = standardize_image(image_bytes=images, stddev=STDDEV_RGB)
+      if dtype is not None:
+          images = tf.image.convert_image_dtype(images, dtype=dtype)
 
   return images
 
