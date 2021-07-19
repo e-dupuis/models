@@ -342,7 +342,7 @@ def train_and_eval(
 ):
     export_path = os.path.join(params.model_dir, "exported_model")
 
-    logging.set_verbosity(logging.INFO)
+    logging.set_verbosity(logging.WARNING)
     """Runs the train and eval path using compile/fit."""
     logging.info('Running train and eval.')
     logging.info(f"Model dir {params.model_dir}")
@@ -479,6 +479,7 @@ def train_and_eval(
             'validation_freq': params.evaluation.epochs_between_evals,
         }
 
+    print(type(train_dataset))
     history = model.fit(
         train_dataset,
         epochs=train_epochs,
